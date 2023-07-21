@@ -20,6 +20,9 @@ class AudioTranscriber(ttk.Frame):
         self.recording_stream = None
         self.playback_stream = None
         self.playback_callback = None
+        self.realtime_audio_data = None
+        self.realtime_stream = None
+        self.selected_model = "base"  # Default model selection
 
         # Create widgets
         self.setup_widgets()
@@ -29,9 +32,22 @@ class AudioTranscriber(ttk.Frame):
         self.master.tk.call("set_theme", "dark")
 
     def setup_widgets(self):
+        # Create a Frame for the model selection options
+        self.model_frame = ttk.LabelFrame(self, text="Model Options", padding=(20, 10))
+        self.model_frame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+
+        # Model Selection Dropdown
+        self.model_selection_label = ttk.Label(self.model_frame, text="Select Model:")
+        self.model_selection_label.grid(row=0, column=0, padx=5, pady=10, sticky="w")  # Align to the left
+
+        self.models = ["tiny", "base", "small"]
+        self.model_var = tk.StringVar(value="base")  # Default model selection
+        self.model_selection_dropdown = ttk.Combobox(self.model_frame, textvariable=self.model_var, values=self.models, state="readonly")
+        self.model_selection_dropdown.grid(row=0, column=1, padx=5, pady=10, sticky="ew")  # Expand horizontally
+
         # Create a Frame for the audio options
         self.audio_frame = ttk.LabelFrame(self, text="Audio Options", padding=(20, 10))
-        self.audio_frame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+        self.audio_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
 
         # Upload Audio Button
         self.upload_btn = ttk.Button(self.audio_frame, text="Upload Audio", command=self.upload_audio)
@@ -60,22 +76,71 @@ class AudioTranscriber(ttk.Frame):
         self.playback_progress_bar.grid_remove()
 
         # Transcribe Button
-        self.transcribe_btn = ttk.Button(self.audio_frame, text="Transcribe", style='Accent.TButton', command=self.transcribe_audio, state=tk.DISABLED)
+        self.transcribe_btn = ttk.Button(self.audio_frame, text="Transcribe", command=self.transcribe_audio, state=tk.DISABLED)
         self.transcribe_btn.grid(row=6, column=0, padx=5, pady=10, sticky="nsew")
 
         # Save Transcription Button
         self.save_btn = ttk.Button(self.audio_frame, text="Save Transcription", command=self.save_transcription, state=tk.DISABLED)
         self.save_btn.grid(row=7, column=0, padx=5, pady=10, sticky="nsew")
 
+        # Create a button for real-time transcription
+        self.realtime_btn = ttk.Button(self.audio_frame, text="Real-time Transcription", style='Accent.TButton', command=self.toggle_realtime)
+        self.realtime_btn.grid(row=8, column=0, padx=5, pady=10, sticky="nsew")
+
+        # Real-time transcription variables
+        self.realtime_audio_data = None
+        self.realtime_stream = None
+
         # Create a Frame for the transcribed text
-        self.transcription_frame = ttk.LabelFrame(self, text="Transcribed Text", style='Card.TFrame', padding=(20, 10))
-        self.transcription_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
+        self.transcription_frame = ttk.LabelFrame(self, text="Transcribed Text", padding=(20, 10))
+        self.transcription_frame.grid(row=0, column=2, padx=20, pady=20, sticky="nsew")
         self.transcription_frame.columnconfigure(0, weight=1)
         self.transcription_frame.rowconfigure(0, weight=1)
 
         # Transcribed Text Widget
         self.transcribed_text = tk.Text(self.transcription_frame, wrap="word")
         self.transcribed_text.grid(row=0, column=0, padx=5, pady=10, sticky="nsew")
+
+    def toggle_realtime(self):
+        if self.realtime_stream is None:
+            self.realtime_btn.config(text="Stop Real-time Transcription")
+            self.start_realtime_transcription()
+        else:
+            self.realtime_btn.config(text="Real-time Transcription")
+            self.stop_realtime_transcription()
+
+    def start_realtime_transcription(self):
+        self.realtime_audio_data = np.array([])
+        self.sample_rate = 44100  # Default sample rate (can be adjusted as needed)
+
+        def audio_callback(indata, frames, time, status):
+            if self.realtime_stream is not None:
+                self.realtime_audio_data = np.append(self.realtime_audio_data, indata.flatten())
+                # Perform real-time transcription here
+                transcribed_text = self.perform_realtime_transcription()
+                self.transcribed_text.config(state=tk.NORMAL)
+                self.transcribed_text.delete("1.0", tk.END)
+                self.transcribed_text.insert(tk.END, transcribed_text)
+                self.transcribed_text.config(state=tk.DISABLED)
+
+        self.realtime_stream = sd.InputStream(callback=audio_callback, channels=1, samplerate=self.sample_rate)
+        self.realtime_stream.start()
+
+    def stop_realtime_transcription(self):
+        if self.realtime_stream:
+            self.realtime_stream.stop()
+            self.realtime_stream.close()
+            self.realtime_stream = None
+
+    def perform_realtime_transcription(self):
+        # Call your real-time transcription logic using Whisper here
+        if self.realtime_audio_data is not None:
+            model = whisper.load_model(self.selected_model)
+            result = model.transcribe(self.realtime_audio_data)
+            return result
+
+        return "No real-time audio data available."
+
 
     def generate_random_string(self, length=8):
         letters = string.ascii_lowercase
@@ -179,22 +244,16 @@ class AudioTranscriber(ttk.Frame):
 
     def transcribe_audio(self):
         if self.audio_data is not None:
-            audio_file_path = self.save_audio(self.audio_data, self.sample_rate)
-
             self.transcribed_text.config(state=tk.NORMAL)  # Enable the widget to insert text
             self.transcribed_text.delete("1.0", tk.END)  # Clear the text widget
 
-            if audio_file_path:
-                transcribed_text = self.perform_transcription(audio_file_path)
-                self.transcribed_text.insert(tk.END, transcribed_text)
-            else:
-                messagebox.showerror("Error", "Failed to save the audio file.")
+            # Call your transcribe function here
+            model = whisper.load_model(self.selected_model)
+            transcribed_text = model.transcribe(self.audio_data)  # Replace this with your transcription logic
 
+            self.transcribed_text.insert(tk.END, transcribed_text)
             self.transcribed_text.config(state=tk.DISABLED)  # Disable the widget to prevent editing
             self.save_btn.config(state=tk.NORMAL)
-
-
-
 
     def save_transcription(self):
         if self.audio_data is not None:
