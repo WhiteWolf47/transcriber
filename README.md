@@ -1,3 +1,3 @@
 # Transcriber App
-![Tkinter GUI](tkgui.png)
+![Tkinter GUI](appss.png)
 
