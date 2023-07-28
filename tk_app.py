@@ -4,6 +4,12 @@ import sounddevice as sd
 import numpy as np
 import whisper
 import os
+import threading
+import time
+import string
+import random
+import soundfile as sf
+from pygame import mixer
 
 
 class AudioTranscriber(ttk.Frame):
@@ -20,8 +26,20 @@ class AudioTranscriber(ttk.Frame):
         self.recording_stream = None
         self.playback_stream = None
         self.playback_callback = None
+        self.playback_position = None
         self.realtime_audio_data = None
         self.realtime_stream = None
+        self.audio_file_path = None
+        self.playpause = False
+
+        # Create control variables for real-time transcription
+        # Real-time transcription variables
+        self.is_recording_realtime = False
+        self.realtime_audio_data = None
+        self.realtime_stream = None
+        self.realtime_transcribed_text = tk.StringVar()
+        self.transcribed_text.set("Real-time Transcription:\n")
+
         self.selected_model = "base"  # Default model selection
 
         # Create widgets
@@ -62,30 +80,31 @@ class AudioTranscriber(ttk.Frame):
         self.progress_bar.grid(row=2, column=0, padx=5, pady=10, sticky="nsew")
 
         # Play Audio Button
-        self.play_btn = ttk.Button(self.audio_frame, text="Play Audio", command=self.toggle_play)
+        self.play_btn = ttk.Button(self.audio_frame, text="Play/Pause Audio", command=self.play_audio)
         self.play_btn.grid(row=3, column=0, padx=5, pady=10, sticky="nsew")
+        #self.play_btn.grid_remove()
 
         # Pause Audio Button
-        self.pause_btn = ttk.Button(self.audio_frame, text="Pause Audio", command=self.toggle_play)
+        '''self.pause_btn = ttk.Button(self.audio_frame, text="Pause Audio", command=self.pause_audio)
         self.pause_btn.grid(row=4, column=0, padx=5, pady=10, sticky="nsew")
-        self.pause_btn.grid_remove()
+        self.pause_btn.grid_remove()'''
 
         # Progress Bar for Playback
         self.playback_progress_bar = ttk.Progressbar(self.audio_frame, orient="horizontal", length=200, mode="determinate")
-        self.playback_progress_bar.grid(row=5, column=0, padx=5, pady=10, sticky="nsew")
+        self.playback_progress_bar.grid(row=4, column=0, padx=5, pady=10, sticky="nsew")
         self.playback_progress_bar.grid_remove()
 
         # Transcribe Button
-        self.transcribe_btn = ttk.Button(self.audio_frame, text="Transcribe", command=self.transcribe_audio, state=tk.DISABLED)
-        self.transcribe_btn.grid(row=6, column=0, padx=5, pady=10, sticky="nsew")
+        self.transcribe_btn = ttk.Button(self.audio_frame, text="Transcribe", style='Accent.TButton', command=self.transcribe_audio, state=tk.DISABLED)
+        self.transcribe_btn.grid(row=5, column=0, padx=5, pady=10, sticky="nsew")
 
         # Save Transcription Button
         self.save_btn = ttk.Button(self.audio_frame, text="Save Transcription", command=self.save_transcription, state=tk.DISABLED)
-        self.save_btn.grid(row=7, column=0, padx=5, pady=10, sticky="nsew")
+        self.save_btn.grid(row=6, column=0, padx=5, pady=10, sticky="nsew")
 
         # Create a button for real-time transcription
         self.realtime_btn = ttk.Button(self.audio_frame, text="Real-time Transcription", style='Accent.TButton', command=self.toggle_realtime)
-        self.realtime_btn.grid(row=8, column=0, padx=5, pady=10, sticky="nsew")
+        self.realtime_btn.grid(row=7, column=0, padx=5, pady=10, sticky="nsew")
 
         # Real-time transcription variables
         self.realtime_audio_data = None
@@ -101,8 +120,111 @@ class AudioTranscriber(ttk.Frame):
         self.transcribed_text = tk.Text(self.transcription_frame, wrap="word")
         self.transcribed_text.grid(row=0, column=0, padx=5, pady=10, sticky="nsew")
 
+    def save_realtime_audio(self, audio_data, sample_rate, filename):
+        folder_path = "audios_realtime"
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
+        file_path = os.path.join(folder_path, filename)
+        sf.write(file_path, audio_data, sample_rate)
+
+        return file_path
+
+    def realtime_transcription_thread(self):
+        while self.is_recording_realtime:
+            audio_data = self.record_realtime_audio()
+            if audio_data is not None:
+                file_path = self.save_realtime_audio(audio_data, self.sample_rate, "three_sec_audio.wav")
+                self.transcribe_realtime_audio(file_path)
+                time.sleep(3)
+
+    def record_realtime_audio(self):
+        self.realtime_audio_data = np.array([])
+        self.sample_rate = 44100  # Default sample rate (can be adjusted as needed)
+
+        def audio_callback(indata, frames, time, status):
+            if self.is_recording_realtime:
+                self.realtime_audio_data = np.append(self.realtime_audio_data, indata.flatten())
+
+        self.realtime_stream = sd.InputStream(callback=audio_callback, channels=1, samplerate=self.sample_rate)
+        self.realtime_stream.start()
+
+        # Record for 3 seconds
+        time.sleep(3)
+
+        # Stop and close the stream
+        if self.realtime_stream:
+            self.realtime_stream.stop()
+            self.realtime_stream.close()
+            self.realtime_stream = None
+
+        return self.realtime_audio_data
+
+    def transcribe_realtime_audio(self, file_path):
+        model = whisper.load_model(self.selected_model)
+        transcribed_text = model.transcribe(file_path)
+        transcribed_text = transcribed_text["text"]
+
+        self.transcribed_text.config(state=tk.NORMAL)
+        self.transcribed_text.delete("1.0", tk.END)
+        self.transcribed_text.insert(tk.END, transcribed_text)
+        self.transcribed_text.config(state=tk.DISABLED)
+        self.save_btn.config(state=tk.NORMAL)
+
+    def rms(self, audio_data):
+        return np.sqrt(np.mean(np.square(audio_data)))
+
+    def realtime_transcription_thread(self):
+        self.is_recording_realtime = True
+        audio_data = np.array([])
+        start_time = time.time()
+        silence_threshold = 0.01  # Adjust this threshold based on your preference
+
+        while self.is_recording_realtime:
+            indata, _ = sd.rec(int(self.sample_rate / 10), samplerate=self.sample_rate, channels=1)
+            rms_value = self.rms(indata)
+
+            if rms_value > silence_threshold:
+                audio_data = np.append(audio_data, indata.flatten())
+            else:
+                if len(audio_data) > 0:
+                    file_path = self.save_realtime_audio(audio_data, self.sample_rate, "three_sec_audio.wav")
+                    transcribed_text = self.transcribe_realtime_audio(file_path)
+                    self.update_realtime_transcription(transcribed_text)
+                    audio_data = np.array([])
+
+            current_time = time.time()
+            elapsed_time = current_time - start_time
+            if elapsed_time >= 3:
+                if len(audio_data) > 0:
+                    file_path = self.save_realtime_audio(audio_data, self.sample_rate, "three_sec_audio.wav")
+                    transcribed_text = self.transcribe_realtime_audio(file_path)
+                    self.update_realtime_transcription(transcribed_text)
+                audio_data = np.array([])
+                start_time = time.time()
+
+        sd.stop()
+
+    def save_realtime_audio(self, audio_data, sample_rate, filename):
+        folder_path = "realtime_audios"
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
+        file_path = os.path.join(folder_path, filename)
+        sd.write(file_path, audio_data, sample_rate)
+        return file_path
+
+    def transcribe_realtime_audio(self, file_path):
+        model = whisper.load_model(self.selected_model)
+        result = model.transcribe(file_path)
+        return result["text"]
+
+    def update_realtime_transcription(self, text):
+        current_transcription = self.realtime_transcribed_text.get()
+        self.realtime_transcribed_text.set(current_transcription + text + "\n")
+
     def toggle_realtime(self):
-        if self.realtime_stream is None:
+        if not self.is_recording_realtime:
             self.realtime_btn.config(text="Stop Real-time Transcription")
             self.start_realtime_transcription()
         else:
@@ -114,37 +236,33 @@ class AudioTranscriber(ttk.Frame):
         self.sample_rate = 44100  # Default sample rate (can be adjusted as needed)
 
         def audio_callback(indata, frames, time, status):
-            if self.realtime_stream is not None:
+            if self.is_recording_realtime:
                 self.realtime_audio_data = np.append(self.realtime_audio_data, indata.flatten())
-                # Perform real-time transcription here
-                transcribed_text = self.perform_realtime_transcription()
-                self.transcribed_text.config(state=tk.NORMAL)
-                self.transcribed_text.delete("1.0", tk.END)
-                self.transcribed_text.insert(tk.END, transcribed_text)
-                self.transcribed_text.config(state=tk.DISABLED)
 
         self.realtime_stream = sd.InputStream(callback=audio_callback, channels=1, samplerate=self.sample_rate)
         self.realtime_stream.start()
 
+        # Start the thread for real-time transcription
+        self.realtime_transcription_thread()
+
     def stop_realtime_transcription(self):
         if self.realtime_stream:
+            self.is_recording_realtime = False
             self.realtime_stream.stop()
             self.realtime_stream.close()
             self.realtime_stream = None
 
-    def perform_realtime_transcription(self):
-        # Call your real-time transcription logic using Whisper here
-        if self.realtime_audio_data is not None:
-            model = whisper.load_model(self.selected_model)
-            result = model.transcribe(self.realtime_audio_data)
-            return result
-
-        return "No real-time audio data available."
-
-
     def generate_random_string(self, length=8):
         letters = string.ascii_lowercase
         return ''.join(random.choice(letters) for i in range(length))
+
+    def upload_audio(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Audio Files", "*.wav;*.mp3")])
+        if file_path:
+            self.audio_data, self.sample_rate = None, None  # Reset previous audio data
+            self.audio_file_path = file_path
+            self.transcribe_btn.config(state=tk.NORMAL)
+            self.play_btn.config(state=tk.NORMAL)
 
     def save_audio(self, audio_data, sample_rate):
         folder_path = "audios"
@@ -157,16 +275,9 @@ class AudioTranscriber(ttk.Frame):
             filename = os.path.basename(self.audio_file_path)
 
         file_path = os.path.join(folder_path, filename)
-        whisper.write(file_path, audio_data, sample_rate)
+        sf.write(file_path, audio_data, sample_rate)  # Use soundfile.write to save the audio
         return file_path
 
-    def upload_audio(self):
-        file_path = filedialog.askopenfilename(filetypes=[("Audio Files", "*.wav;*.mp3")])
-        if file_path:
-            self.audio_data, self.sample_rate = whisper.read(file_path)
-            self.audio_file_path = file_path
-            self.transcribe_btn.config(state=tk.NORMAL)
-            self.play_btn.config(state=tk.NORMAL)
     def toggle_record(self):
         if not self.is_recording:
             self.is_recording = True
@@ -204,6 +315,10 @@ class AudioTranscriber(ttk.Frame):
             self.recording_stream.close()
             self.recording_stream = None
 
+            # Save the recorded audio to a file and set audio_file_path
+            self.audio_file_path = self.save_audio(self.audio_data, self.sample_rate)
+
+
     def toggle_play(self):
         if self.audio_data is not None:
             if self.playback_stream is None:
@@ -218,24 +333,51 @@ class AudioTranscriber(ttk.Frame):
                 self.pause_audio()
 
     def play_audio(self):
-        if self.audio_data is not None:
+        if not self.playpause:
+            mixer.init()
+            sound = mixer.Sound(self.audio_file_path)
+            sound.play()
+            self.playpause = True
+        else:
+            mixer.stop()
+            self.playpause = False
+        '''if self.audio_file_path:
+            if not self.playback_stream:
+                self.playback_position = 0
+
+            audio_data, self.sample_rate = sf.read(self.audio_file_path, dtype='float32')
+            if self.playback_position >= len(audio_data):
+                self.playback_position = 0
+
+            audio_chunk = audio_data[self.playback_position:]
             self.playback_stream = sd.OutputStream(callback=self.playback_callback, channels=1, samplerate=self.sample_rate)
             self.playback_stream.start()
+            self.is_paused = False'''
 
     def pause_audio(self):
         if self.playback_stream:
             self.playback_stream.stop()
             self.playback_stream.close()
             self.playback_stream = None
+            self.is_paused = True
 
     def playback_callback(self, outdata, frames, time, status):
-        if len(self.audio_data) == 0:
-            return
-        playback_ratio = outdata.shape[0] / self.audio_data.shape[0]
-        current_index = int(self.playback_progress_bar["value"] * playback_ratio)
-        current_index = min(current_index, self.audio_data.shape[0])
-        outdata[:, 0] = self.audio_data[:current_index].reshape(-1, 1)
-        self.playback_progress_bar["value"] = current_index / playback_ratio
+        if self.audio_file_path and not self.is_paused:
+            audio_data, self.sample_rate = sf.read(self.audio_file_path, dtype='float32')
+            if len(audio_data) == 0 or self.playback_position >= len(audio_data):
+                self.pause_audio()
+                return
+
+            playback_ratio = outdata.shape[0] / audio_data.shape[0]
+            current_index = int(self.playback_position * playback_ratio)
+            end_index = int((self.playback_position + frames) * playback_ratio)
+            current_index = min(current_index, audio_data.shape[0])
+            end_index = min(end_index, audio_data.shape[0])
+            if current_index >= end_index:
+                return
+
+            outdata[:, 0] = audio_data[current_index:end_index].reshape(-1, 1)
+            self.playback_position = int(end_index / playback_ratio)
 
     def perform_transcription(self, audio_file_path):
         model = whisper.load_model("base")
@@ -243,17 +385,18 @@ class AudioTranscriber(ttk.Frame):
         return result
 
     def transcribe_audio(self):
-        if self.audio_data is not None:
+        if self.audio_file_path:
             self.transcribed_text.config(state=tk.NORMAL)  # Enable the widget to insert text
             self.transcribed_text.delete("1.0", tk.END)  # Clear the text widget
 
             # Call your transcribe function here
             model = whisper.load_model(self.selected_model)
-            transcribed_text = model.transcribe(self.audio_data)  # Replace this with your transcription logic
-
+            transcribed_text = model.transcribe(self.audio_file_path)  # Replace this with your transcription logic
+            transcribed_text = transcribed_text["text"]
             self.transcribed_text.insert(tk.END, transcribed_text)
             self.transcribed_text.config(state=tk.DISABLED)  # Disable the widget to prevent editing
             self.save_btn.config(state=tk.NORMAL)
+
 
     def save_transcription(self):
         if self.audio_data is not None:
